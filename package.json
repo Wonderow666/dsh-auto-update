@@ -20,8 +20,10 @@
     "lib",
     "examples",
     "test",
+    "docs",
     "apply-update.ps1",
     "cordis.patch.yml",
+    "screenshots.json",
     "README.md",
     "LICENSE"
   ],
