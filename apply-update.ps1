@@ -9,15 +9,20 @@
 #              launcher pointer, restart the web host, health check, and roll
 #              back automatically when the new host does not come up.
 #   rollback - repoint the launcher pointer back to <TargetRoot> and restart.
+#   migrate  - copy the current install into <InstallBase> (robocopy), verify the
+#              copy with a boot smoke test, record the new base in
+#              install-base.txt, repoint the launcher, restart, and roll back both
+#              the pointer and the base file when the new location does not boot.
 #
 # ASCII-only, Windows PowerShell 5.1 compatible.
 
 param(
-    [ValidateSet('apply', 'rollback', 'restart')]
+    [ValidateSet('apply', 'rollback', 'restart', 'migrate')]
     [string]$Mode = 'apply',
     [string]$Version = '',
     [string]$CurrentRoot = '',
     [string]$TargetRoot = '',
+    [string]$InstallBase = '',
     [string]$StateDir = '',
     [string]$LauncherDir = '',
     [string]$LaunchCmd = '',
@@ -44,6 +49,7 @@ if ($ArgsFile) {
     if ($cfg.version) { $Version = [string]$cfg.version }
     if ($cfg.currentRoot) { $CurrentRoot = [string]$cfg.currentRoot }
     if ($cfg.targetRoot) { $TargetRoot = [string]$cfg.targetRoot }
+    if ($cfg.installBase) { $InstallBase = [string]$cfg.installBase }
     if ($cfg.stateDir) { $StateDir = [string]$cfg.stateDir }
     if ($cfg.launcherDir) { $LauncherDir = [string]$cfg.launcherDir }
     if ($cfg.launchCmd) { $LaunchCmd = [string]$cfg.launchCmd }
@@ -80,17 +86,31 @@ $LockFile        = Join-Path $StateDir 'apply.lock'
 $ResultFile      = Join-Path $StateDir 'last-result.json'
 $PointerFile     = Join-Path $LauncherDir 'current-root.txt'
 $PreviousPointer = Join-Path $StateDir 'previous-root.txt'
+# The launcher reads its base from this one-line file (cmd.exe, OEM code page, so
+# ASCII only). '-' in the backup file means "there was no file: use the default".
+$BaseFile         = Join-Path $LauncherDir 'install-base.txt'
+$PreviousBaseFile = Join-Path $StateDir 'previous-base.txt'
 $HealthUrl       = "http://127.0.0.1:$Port/api/pair/status"
 
-# Installs live at <base>\dsh-install-<version>. Derive the base instead of
-# hardcoding it: this account's home path is non-ASCII.
-if ($CurrentRoot) {
-    $InstallBase = Split-Path $CurrentRoot -Parent
-} elseif ($env:DSH_HOME) {
-    $InstallBase = Split-Path $env:DSH_HOME -Parent
-} else {
-    $InstallBase = Join-Path $env:USERPROFILE 'Documents\Codex\2026-08-14\w'
+# Installs live at <base>\dsh-install-<version>. Resolution order: explicit
+# parameter (the plugin passes it) -> install-base.txt -> derived default.
+# Never hardcode a base: this account's home path is non-ASCII.
+if ($InstallBase) {
+    $InstallBase = $InstallBase.TrimEnd('\')
+} elseif (Test-Path $BaseFile) {
+    $fromFile = (Get-Content -Path $BaseFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+    if ($fromFile) { $InstallBase = $fromFile.Trim().TrimEnd('\') }
 }
+if (-not $InstallBase) {
+    if ($CurrentRoot) {
+        $InstallBase = Split-Path $CurrentRoot -Parent
+    } elseif ($env:DSH_HOME) {
+        $InstallBase = Split-Path $env:DSH_HOME -Parent
+    } else {
+        $InstallBase = Join-Path $env:USERPROFILE 'Documents\Codex\2026-08-14\w'
+    }
+}
+$DefaultInstallBase = Join-Path $env:USERPROFILE 'Documents\Codex\2026-08-14\w'
 
 function Write-Log([string]$Text) {
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Text
@@ -116,6 +136,7 @@ function Write-Result([string]$Status, [string]$Detail) {
         detail  = $Detail
         from    = $CurrentRoot
         to      = $to
+        base    = $InstallBase
     }
     try {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -350,6 +371,7 @@ function Restart-And-Verify {
 
     Write-Log "rolling back to $restore"
     Set-Pointer $restore
+    Restore-PreviousBase
     Stop-WebHost | Out-Null
     Start-WebHost
     if (Wait-WebHealthy 150) {
@@ -442,7 +464,32 @@ function Get-Pointer() {
     $tag = Get-PointerTag
     if (-not $tag) { return '' }
     if ($tag -match '^[A-Za-z]:\\') { return $tag }   # tolerate a legacy full-path pointer
-    return (Join-Path $InstallBase ('dsh-install-' + $tag))
+    $leaf = 'dsh-install-' + $tag
+    $guess = Join-Path $InstallBase $leaf
+    if (Test-Path (Join-Path $guess 'node_modules\@deepseek-ai\dsh\lib\bin.js')) { return $guess }
+    # Right after a base switch the running install can still sit in the old base.
+    if ($CurrentRoot -and ((Split-Path $CurrentRoot -Leaf) -eq $leaf)) { return $CurrentRoot }
+    $fallback = Join-Path $DefaultInstallBase $leaf
+    if (Test-Path (Join-Path $fallback 'node_modules\@deepseek-ai\dsh\lib\bin.js')) { return $fallback }
+    return $guess
+}
+
+# A migration rewrites install-base.txt. When the new location does not boot, the
+# old base has to come back too: restoring only the pointer tag would make the
+# launcher resolve that tag inside the new (broken) base.
+function Restore-PreviousBase {
+    if (-not (Test-Path $PreviousBaseFile)) { return }
+    $prev = Get-Content -Path $PreviousBaseFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    if ($null -eq $prev) { return }
+    $prev = $prev.Trim()
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    if (-not $prev -or $prev -eq '-') {
+        Remove-Item -Path $BaseFile -Force -ErrorAction SilentlyContinue
+        Write-Log 'install base file removed (back to the default location)'
+    } else {
+        [IO.File]::WriteAllText($BaseFile, $prev, $utf8NoBom)
+        Write-Log "install base restored to $prev"
+    }
 }
 
 # Manual runs may omit -CurrentRoot; the launcher pointer already knows it.
@@ -497,8 +544,8 @@ try {
         if (-not $Version) { throw 'apply needs -Version' }
         if (-not (Test-Path (Get-WebBin $CurrentRoot))) { throw "current root has no dsh install: $CurrentRoot" }
 
-        $installBase = Split-Path $CurrentRoot -Parent
-        $newRoot = Join-Path $installBase ("dsh-install-" + $Version)
+        $newRoot = Join-Path $InstallBase ("dsh-install-" + $Version)
+        Write-Log "install base: $InstallBase"
         Write-Log "target root: $newRoot"
 
         if ($DryRun.IsPresent) {
@@ -529,6 +576,87 @@ try {
         if (-not (Start-Stage2)) {
             if (Restart-And-Verify) {
                 Write-Result 'ok' "now running v$Version from $newRoot"
+                exit 0
+            }
+            exit 2
+        }
+        exit 0
+    }
+
+    if ($Mode -eq 'migrate') {
+        if (-not $Version) { throw 'migrate needs -Version' }
+        if (-not $InstallBase) { throw 'migrate needs -InstallBase' }
+        if (-not $CurrentRoot) { throw 'migrate needs -CurrentRoot' }
+        if (-not (Test-Path (Get-WebBin $CurrentRoot))) { throw "current root has no dsh install: $CurrentRoot" }
+        $targetRoot = Join-Path $InstallBase ('dsh-install-' + $Version)
+        $sourceBase = (Split-Path $CurrentRoot -Parent).TrimEnd('\')
+        Write-Log "migrate $CurrentRoot -> $targetRoot"
+
+        if ($DryRun.IsPresent) {
+            Write-Log 'dry run: nothing copied, pointer and install base untouched'
+            Write-Result 'dry-run' "would copy $CurrentRoot to $targetRoot, smoke test it, record $InstallBase as the install base and restart"
+            exit 0
+        }
+
+        # "Already there" first: it is the useful answer even when the current base
+        # is the default non-ASCII profile path.
+        if ($sourceBase -eq $InstallBase) { throw "the install already lives in $InstallBase" }
+        # cmd.exe reads install-base.txt in the OEM code page, so a non-ASCII base
+        # comes back as mojibake and silently points at nothing.
+        if ($InstallBase -notmatch '^[A-Za-z]:[\\/][\x20-\x7E]*$') { throw "install base must be an absolute ASCII path: $InstallBase" }
+        $letter = $InstallBase.Substring(0, 1)
+        $freeBytes = $null
+        try {
+            $driveInfo = New-Object System.IO.DriveInfo($letter + ':')
+            $freeBytes = $driveInfo.AvailableFreeSpace
+        } catch {
+            throw "drive ${letter}: is not usable: $($_.Exception.Message)"
+        }
+        $needed = 0
+        try { $needed = (Get-ChildItem -Path $CurrentRoot -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum } catch { }
+        $neededMB = [int]($needed / 1MB)
+        $freeMB = [int]($freeBytes / 1MB)
+        Write-Log "copy size about $neededMB MB, free on ${letter}: $freeMB MB"
+        if ($neededMB -gt 0 -and $freeMB -lt [int]($neededMB * 1.2)) {
+            throw "not enough free space on ${letter}: (need about $neededMB MB, $freeMB MB free)"
+        }
+
+        New-Item -ItemType Directory -Force -Path $InstallBase | Out-Null
+        if (Test-Path $targetRoot) {
+            Write-Log "removing stale copy $targetRoot"
+            Remove-Item -Path $targetRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Log 'copying with robocopy (this can take a minute)'
+        $robocopyArgs = @($CurrentRoot, $targetRoot, '/E', '/R:1', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/MT:8')
+        & robocopy.exe @robocopyArgs 2>&1 | Out-File -Append -FilePath $LogFile -Encoding UTF8
+        $code = $LASTEXITCODE
+        Write-Log "robocopy exit code: $code"
+        if ($code -ge 8) { throw "robocopy failed with exit code $code" }
+
+        $copied = Get-InstalledVersion $targetRoot
+        if ($copied -ne $Version) { throw "copied install reports v$copied, expected v$Version" }
+        Test-BootComposition $targetRoot | Out-Null
+
+        # Remember the pointer and the base; Restart-And-Verify puts both back when
+        # the new location does not boot.
+        $oldPointer = Get-Pointer
+        if ($oldPointer) { Set-Content -Path $PreviousPointer -Value $oldPointer -Encoding ASCII }
+        if (Test-Path $BaseFile) {
+            Copy-Item -Path $BaseFile -Destination $PreviousBaseFile -Force
+        } else {
+            Set-Content -Path $PreviousBaseFile -Value '-' -Encoding ASCII
+        }
+
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($BaseFile, $InstallBase, $utf8NoBom)
+        Write-Log "install base -> $InstallBase"
+        Set-Pointer $targetRoot
+        Write-Log "the old install stays at $CurrentRoot until you delete it"
+        Write-Result 'pending' "moved to $InstallBase; the host is restarting (this page reconnects shortly)"
+
+        if (-not (Start-Stage2)) {
+            if (Restart-And-Verify) {
+                Write-Result 'ok' "now running v$Version from $targetRoot"
                 exit 0
             }
             exit 2

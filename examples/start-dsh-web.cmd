@@ -22,22 +22,36 @@ REM ---------------------------------------------------------------------------
 
 set "HERE=%~dp0"
 set "POINTER=%HERE%current-root.txt"
+set "BASE_FILE=%HERE%install-base.txt"
 set "LOG=%HERE%web-run.out.log"
 
-REM The pointer holds a bare version tag (e.g. 0.2.0-rc.2). Installs live next
-REM to DSH_HOME in directories named dsh-install-<tag>, which is why the tag -
-REM and never a path - is what gets written: cmd.exe reads this file in the OEM
-REM code page, so a non-ASCII path would come back as mojibake.
-set "BASE=%DSH_HOME%\.."
-set "TAG="
-if exist "%POINTER%" for /f "usebackq delims=" %%t in ("%POINTER%") do set "TAG=%%t"
+REM The pointer holds a bare version tag (e.g. 0.2.0-rc.2). Installs live in
+REM <base>\dsh-install-<tag>, which is why the tag - and never a path - is what
+REM gets written: cmd.exe reads this file in the OEM code page, so a non-ASCII
+REM path would come back as mojibake.
+REM
+REM install-base.txt (optional, written by the plugin's "install directory"
+REM setting) holds that base as an ASCII absolute path. Absent means "next to
+REM DSH_HOME", the default.
+set "BASE="
+if exist "%BASE_FILE%" for /f "usebackq delims=" %%b in ("%BASE_FILE%") do if not defined BASE set "BASE=%%b"
+if defined BASE if not exist "%BASE%\" set "BASE="
+if not defined BASE set "BASE=%DSH_HOME%\.."
 
+set "TAG="
+if exist "%POINTER%" for /f "usebackq delims=" %%t in ("%POINTER%") do if not defined TAG set "TAG=%%t"
+
+set "DEFAULT_BASE=%DSH_HOME%\.."
 set "ROOT="
-if defined TAG if exist "%BASE%\dsh-install-%TAG%\node_modules\@deepseek-ai\dsh\lib\bin.js" set "ROOT=%BASE%\dsh-install-%TAG%"
+if defined TAG set "ROOT=%BASE%\dsh-install-%TAG%"
+if defined ROOT if not exist "%ROOT%\node_modules\@deepseek-ai\dsh\lib\bin.js" set "ROOT="
+REM After a base switch the tagged version can still sit in the other base.
+if not defined ROOT if defined TAG if /i not "%BASE%"=="%DEFAULT_BASE%" if exist "%DEFAULT_BASE%\dsh-install-%TAG%\node_modules\@deepseek-ai\dsh\lib\bin.js" set "ROOT=%DEFAULT_BASE%\dsh-install-%TAG%"
 if not defined ROOT for /f "delims=" %%d in ('dir /b /ad /o-n "%BASE%\dsh-install-*" 2^>nul') do if not defined ROOT if exist "%BASE%\%%d\node_modules\@deepseek-ai\dsh\lib\bin.js" set "ROOT=%BASE%\%%d"
+if not defined ROOT if /i not "%BASE%"=="%DEFAULT_BASE%" for /f "delims=" %%d in ('dir /b /ad /o-n "%DEFAULT_BASE%\dsh-install-*" 2^>nul') do if not defined ROOT if exist "%DEFAULT_BASE%\%%d\node_modules\@deepseek-ai\dsh\lib\bin.js" set "ROOT=%DEFAULT_BASE%\%%d"
 
 if not defined ROOT (
-    echo [start-dsh-web] no usable dsh install found next to "%DSH_HOME%" >> "%LOG%"
+    echo [start-dsh-web] no usable dsh install found in "%BASE%" or "%DEFAULT_BASE%" >> "%LOG%"
     exit /b 1
 )
 

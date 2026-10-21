@@ -1,8 +1,8 @@
 # dsh-auto-update
 
-给 DeepSeek Harness（DSH）CLI 装一个**能安全升级自己**的插件：检查 `@deepseek-ai/dsh` 新版本、后台安装到独立目录、切换启动指针、健康检查失败自动回滚。网页端设置页里点按钮就行。
+给 DeepSeek Harness（DSH）CLI 装一个**能安全升级自己**的插件：检查 `@deepseek-ai/dsh` 新版本、后台安装到独立目录、切换启动指针、健康检查失败自动回滚。网页端设置页里点按钮就行，安装目录（版本装在哪块盘）也能在同一个卡片里改。
 
-> **English TL;DR** — a DSH plugin that checks the npm dist-tag for `@deepseek-ai/dsh`, installs the new version **side by side** (never in place), smoke-tests the composed config, repoints a launcher pointer, restarts the web host from a process outside the host's job object, and rolls back automatically if the new version does not come up healthy. Windows only (PowerShell 5.1 + cmd). MIT.
+> **English TL;DR** — a DSH plugin that checks the npm dist-tag for `@deepseek-ai/dsh`, installs the new version **side by side** (never in place), smoke-tests the composed config, repoints a launcher pointer, restarts the web host from a process outside the host's job object, and rolls back automatically if the new version does not come up healthy. It also moves the side-by-side install base to another drive (copy → verify → repoint → restart), rolling back both the pointer and the base if that fails. Windows only (PowerShell 5.1 + cmd). MIT.
 
 <img src="docs/settings-card.png" width="520" alt="设置页里的 DSH 版本更新卡片：当前 0.2.0-rc.2、可用 0.2.1-rc.2、上次结果 rolled-back">
 
@@ -20,13 +20,14 @@ DSH CLI 没有 `update` 子命令——`dsh plugin` 只是把参数转发给 pnp
 2. **先验证再切换**：`node bin.js --profile web --dump-config` 能组合出配置树（且退出码 0）才算装成功；装好才动启动指针。
 3. **重启必须来自宿主之外**：进程内做不到原地复活。切换指针后由一个通过 WMI 拉起的进程接手（父进程是 `WmiPrvSE.exe`，不在任何 job 树里），宿主死掉不会连坐。
 4. **起不来就退回去**：健康检查失败 → 指针切回旧版本 → 重启旧版本 → 写 `last-result.json`（`status: "rolled-back"`）。
+5. **安装目录是配置项，不是常量**：换目录 = 复制 → 自检 → 改 `install-base.txt` → 切指针 → 重启；失败时指针和目录一起回滚（否则指针会指向新目录里不存在的版本）。
 
 ## 组成
 
 | 文件 | 作用 |
 | --- | --- |
-| `lib/index.js` | 宿主插件：`/status` `/check` `/apply` `/rollback` `/config` 接口 + 后台定时检查 + 自动应用 |
-| `lib/client.js` | 设置页「载具更新」卡片（当前/最新版本、检查、安装、回滚、自动更新开关） |
+| `lib/index.js` | 宿主插件：`/status` `/check` `/apply` `/rollback` `/config` `/install-base` `/migrate` 接口 + 后台定时检查 + 自动应用 |
+| `lib/client.js` | 设置页「载具更新」卡片（当前/最新版本、检查、安装、回滚、安装目录、自动更新开关） |
 | `apply-update.ps1` | 真正干活的脚本：npm 安装 → 冒烟 → 切指针 → 停旧起新 → 健康检查 → 失败回滚 |
 | `cordis.patch.yml` | 把插件本体插进 loader |
 | `examples/start-dsh-web.cmd` | **重启命令的模板**（插件不猜你怎么启动服务，见下文） |
@@ -66,6 +67,7 @@ dsh plugin --profile web add link:C:\path\to\dsh-auto-update
 | `DSH_AUTO_UPDATE_LAUNCHER_DIR` | `%DSH_HOME%\auto-update\launcher` | 启动指针 `current-root.txt` 所在目录 |
 | `DSH_AUTO_UPDATE_BOOT_LOG` | *（空）* | 启动日志路径；配了才能把"起不来"的具体原因显示在卡片上 |
 | `DSH_HOME` | `~/.dsh` | DSH 数据根；安装目录默认在它旁边 |
+| `DSH_AUTO_UPDATE_INSTALL_BASE` | *（空）* | 安装目录的兜底默认值，会被 `install-base.txt` 覆盖（见「安装目录」） |
 
 ```powershell
 setx DSH_AUTO_UPDATE_LAUNCH_CMD "C:\tools\start-dsh-web.cmd"
@@ -95,6 +97,28 @@ setx DSH_AUTO_UPDATE_BOOT_LOG "C:\tools\start-dsh-web.log"
 1. **指针只写版本号**（如 `0.2.1-rc.2`），脚本自己拼出安装目录。原因：`current-root.txt` 由 cmd.exe 按 OEM 代码页读取，写完整路径时，**用户名含非 ASCII 字符的机器**（如 `C:\Users\张三\...`）会读成乱码，然后静默判成"安装不存在"。只存 ASCII 版本号则任何代码页都安全。
 2. 脚本读不到指针时，按 `dsh-install-*` 目录名倒序回退到最新的完整安装。
 3. 一定要把 stdout/stderr 落盘（模板写同目录 `web-run.out.log`，并自行轮转）——否则"90 秒没起来"这种故障无从查起。
+4. 用了自定义安装目录时，脚本还要读同目录的 `install-base.txt` 决定去哪个目录找 `dsh-install-<版本>`（见下一节）。
+
+## 安装目录（可改）
+
+默认安装目录是 `%DSH_HOME%` 的上一级（这台机器上是 `...\w`），每个版本装在 `<安装目录>\dsh-install-<版本>` 里。设置页的「安装目录」区块可以把它换到别的盘：
+
+- **改到这里**：只写配置，不动正在跑的安装；之后 `/apply` 装的新版本会落在新目录。
+- **把当前安装迁过去**：整体复制（robocopy）→ 自检（版本号 + `--dump-config` 冒烟）→ 写 `install-base.txt` → 切指针 → 重启 → 健康检查 + 版本核对。任何一步失败，**指针和 `install-base.txt` 会一起回滚**——只回滚指针会让启动脚本去新目录里找一个根本不存在的版本。
+- **恢复默认位置**：删掉 `install-base.txt`。
+
+契约（`<指针目录>\install-base.txt`，默认 `%DSH_HOME%\auto-update\launcher\`）：
+
+```
+D:\dsh-installs
+```
+
+- 只有一行、**纯 ASCII 绝对路径**、无 BOM。启动脚本是 cmd 批处理，按 OEM 代码页读文件；`C:\Users\张三\...` 这种路径会读成乱码，然后静默指向空目录。
+- 文件不存在 = 用默认安装目录，**不需要**这个文件。
+- 迁移后旧目录不会自动删（它就是回滚路径），确认新版稳定后自己清理。
+- 指针存的是版本号而不是路径，所以"同一版本在两个目录里都有"时按 `install-base.txt` → 默认目录的顺序找，再退到该目录下最新的完整安装。
+
+限制：自定义目录必须在 ASCII 路径下（空格可以、中文不行），磁盘剩余空间需 ≥ 安装体积的 1.2 倍（0.2.x 每个版本约 300–700 MB）。
 
 ## 接口
 
@@ -108,6 +132,8 @@ setx DSH_AUTO_UPDATE_BOOT_LOG "C:\tools\start-dsh-web.log"
 | POST | `/apply` | 后台安装，body 可带 `{"version":"x.y.z"}`，默认最新版 |
 | POST | `/rollback` | 回到 `previous-root.txt` 记录的版本 |
 | POST | `/config` | 改 `autoApply` / `intervalHours` / `channel` / `registry`，落 `config.json` |
+| POST | `/install-base` | 设置安装目录，body `{"base":"D:\\dsh-installs"}`；传 `""` 恢复默认位置（只影响以后的新版本） |
+| POST | `/migrate` | 把当前安装复制到新目录并重启过去，body `{"base":"..."}`；失败自动回滚指针与目录 |
 
 ```powershell
 $base = "http://127.0.0.1:3080/dsh-auto-update/api"
@@ -115,6 +141,8 @@ curl.exe -s "$base/status"
 curl.exe -s -X POST "$base/check" -H "x-dsh-auto-update: 1"
 curl.exe -s -X POST "$base/apply" -H "x-dsh-auto-update: 1" -H "content-type: application/json" -d "{}"
 curl.exe -s -X POST "$base/rollback" -H "x-dsh-auto-update: 1"
+curl.exe -s -X POST "$base/install-base" -H "x-dsh-auto-update: 1" -H "content-type: application/json" -d '{"base":"D:\\dsh-installs"}'
+curl.exe -s -X POST "$base/migrate" -H "x-dsh-auto-update: 1" -H "content-type: application/json" -d '{"base":"D:\\dsh-installs"}'
 ```
 
 ## 升级流程（`apply-update.ps1`）
@@ -143,6 +171,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode apply -Version 0.2
 
 `-DryRun` 的早退发生在 `npm install` **之前**——不存在"dry run 也真装了"的情况。
 
+## 迁移流程（`-Mode migrate`）
+
+1. 校验目标目录：ASCII 绝对路径、不是某个 `dsh-install-*` 本身、盘存在、剩余空间 ≥ 1.2× 安装体积（"已经在那个目录"这个判断放在最前面，所以它给出的原因永远准确）
+2. `robocopy <当前根> <新目录>\dsh-install-<版本> /E /R:1 /W:1 /MT:8`（退出码 ≥ 8 视为失败）
+3. 自检：`package.json` 版本 == 当前版本，且 `--dump-config` 能组合出配置树
+4. 备份旧指针与旧 `install-base.txt`（`previous-root.txt` / `previous-base.txt`，`-` 表示原本没有）
+5. 写新 `install-base.txt` → 切指针 → WMI 交接到 stage-2，由它停旧实例并用重启命令拉起
+6. 健康检查 + 版本核对；失败则指针和 `install-base.txt` 一起回滚，重启回原目录
+
+```powershell
+# 只打印计划，不复制、不改任何文件
+powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode migrate -Version 0.2.0-rc.2 -CurrentRoot C:\...\dsh-install-0.2.0-rc.2 -InstallBase D:\dsh-installs -DryRun
+```
+
 ## 为什么重启要绕道 WMI
 
 宿主只能被**不在它 job 树里**的进程重启。插件拉起的 `apply-update.ps1` 是 web 宿主的子进程，而 DSH 的 `subprocess-local` 会给工具树套 job object：宿主一死，job 关闭，整棵树一起没了。实践中表现出来的样子是——重启脚本日志停在 `stopped pid ...` 那行，后面重启的几行**永远不执行**（这类脚本我写过三个，三个都这样死掉）。
@@ -153,7 +195,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode apply -Version 0.2
 
 ## 安全边界
 
-- **安装目录白名单**：只安装到 `<installBase>\dsh-install-<version>`，不会把 `npm install` 引向任意目录
+- **安装目录白名单**：只安装到 `<installBase>\dsh-install-<version>`，不会把 `npm install` 引向任意目录；改安装目录同样受限——只接受 ASCII 绝对路径，且不能指向某个 `dsh-install-*` 目录本身
 - **版本串校验**：`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$`，且必须比当前版本新（想降级请走 `/rollback`）
 - **写操作要护栏头**：见上，非凭证、只为挡 CSRF
 - **没配重启命令就拒绝升级**：`apply` / `rollback` 会在动指针前失败，不会留下起不来的 profile
@@ -171,6 +213,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode apply -Version 0.2
 | `update.log` | 每次升级的完整日志（含 npm 输出） |
 | `apply.lock` | 单实例锁 |
 | `launcher/current-root.txt` | 启动指针（只存版本号；目录可由 `DSH_AUTO_UPDATE_LAUNCHER_DIR` 改变） |
+| `launcher/install-base.txt` | 安装目录（唯一一行 ASCII 路径；文件不存在 = 默认目录） |
+| `previous-base.txt` | 迁移前的 `install-base.txt` 内容，供回滚恢复（`-` 表示原本没有这个文件） |
 
 ## 排障
 
@@ -201,6 +245,8 @@ $env:DSH_AUTO_UPDATE_OFFLINE=1; node test/handler.test.mjs    # 跳过网络
 
 - 只更新 `@deepseek-ai/dsh` 主包，不动 profile 里的插件（插件各自更新）
 - Windows 专用：重启链依赖 PowerShell 5.1 + cmd.exe 的实例语义
+- 自定义安装目录必须是纯 ASCII 路径（cmd.exe 代码页限制）：空格可以，中文/日文目录名会被拒绝
+- 迁移是整个目录复制，不保留硬链接；同一版本在两个目录各占一份空间，直到你手动删掉旧目录
 - `next` / `alpha` 是预发布通道，别在生产开
 - 升级期间网页会短暂断连（服务确实被重启了）
 - 成功判定不只看「端口有人应答」：重启后会再确认**实际在跑的是哪个版本**（先问插件自己的 `/api/status`，再退回查端口属主进程的安装目录）。这条是踩出来的——曾经有一个老启动器残留进程占着端口，健康检查返回 200、卡片显示成功，而新版其实根本没起来。同时 `Stop-WebHost` 现在也会结束启动脚本包装进程（`start-web.cmd`），避免它把旧版本重新拉起来抢端口。
