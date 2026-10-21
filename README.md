@@ -179,6 +179,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode apply -Version 0.2
 - **新版拒绝 `host: '0.0.0.0'`**：`dsh-host-webserver` 的较新版本不再允许通配地址绑定（"binding every interface would expose remote code execution to the network"）。如果你的 profile patch 里留着 lan-bind 的 `host: '0.0.0.0'`，升级后会在 webserver 处启动失败并自动回滚。改成 `127.0.0.1`（远程访问交给隧道/中继）或某个具体网卡地址，再升级。
 - **网页升级中途断开**：正常现象，宿主被重启了；页面重连后卡片会显示结果。
 
+## 实战记录：0.2.1-rc.2 在带 vision-router 的 profile 上起不来
+
+`0.2.0-rc.2 → 0.2.1-rc.2` 在这台机器上做过两次真实切换，两次都是「新版启动失败 → 自动回滚到 0.2.0」，结论稳定且**与升级器无关**：
+
+- 全新 `DSH_HOME` + 真实 profile 配置逐插件二分：`@deepseek-ai/dsh-base` + `dsh-web-app` 能起；再加 `dsh-vision-router` 立刻起不来；移除它、其余六个插件全留着，能起。
+- 失败形态固定为 `StartupError: dsh: startup failed: 1 required plugin did not activate`，诊断表首行是 `connection (required)  webRuntime`（即 `webRuntime` 一直没被提供，`connection` 卡在等待），日志里没有更具体的插件异常。
+- 机理线索：`dsh-vision-router` 的 `dsh.client.inject` 声明了 `@deepseek-ai/dsh-client-ui-primitives`，而 0.2.1-rc.2 不再发布这个包（0.2.0 有、0.2.1 没有）；它的 bundle patch 又给 `modules` / `connection` 两行追加了 `webServer` / `webRuntime` 依赖。3.0.0 与最新的 3.0.5 声明的 inject 完全一致，`engines` 虽写着支持 `>=0.2.0-rc.2 <0.3.0-0`，实测起不来。
+- 结论：**想上 0.2.1 就得先等 vision-router 发布兼容版本**，或者在升级前把它从 profile 摘掉（会失去自动识图/视觉工具）。升级器该做的是照原样失败并回滚，这点它做对了。
+
 ## 测试
 
 ```powershell
@@ -194,6 +203,7 @@ $env:DSH_AUTO_UPDATE_OFFLINE=1; node test/handler.test.mjs    # 跳过网络
 - Windows 专用：重启链依赖 PowerShell 5.1 + cmd.exe 的实例语义
 - `next` / `alpha` 是预发布通道，别在生产开
 - 升级期间网页会短暂断连（服务确实被重启了）
+- 成功判定不只看「端口有人应答」：重启后会再确认**实际在跑的是哪个版本**（先问插件自己的 `/api/status`，再退回查端口属主进程的安装目录）。这条是踩出来的——曾经有一个老启动器残留进程占着端口，健康检查返回 200、卡片显示成功，而新版其实根本没起来。同时 `Stop-WebHost` 现在也会结束启动脚本包装进程（`start-web.cmd`），避免它把旧版本重新拉起来抢端口。
 
 ## License
 

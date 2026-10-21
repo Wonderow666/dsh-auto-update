@@ -161,6 +161,22 @@ function Stop-WebHost {
     } catch {
         Write-Log "process scan failed: $($_.Exception.Message)"
     }
+    # The launcher wrapper has to go too. A start-web.cmd that survives the stop
+    # can restart the OLD version and win the port before the new one boots,
+    # which is exactly how one upgrade reported success while nothing changed.
+    if ($LaunchCmd) {
+        $launchLeaf = Split-Path $LaunchCmd -Leaf
+        try {
+            Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.CommandLine -and $_.CommandLine -like "*$launchLeaf*") {
+                    Write-Log "stopping launcher wrapper $($_.ProcessId) ($launchLeaf)"
+                    $targets += [int]$_.ProcessId
+                }
+            }
+        } catch {
+            Write-Log "launcher scan failed: $($_.Exception.Message)"
+        }
+    }
     $targets = $targets | Sort-Object -Unique
     if ($targets.Count -eq 0) {
         Write-Log 'no running web host found'
@@ -198,6 +214,27 @@ function Test-PortOpen([int]$LocalPort, [int]$TimeoutMs = 1500) {
     } catch {
         return $false
     }
+}
+
+function Get-RunningVersion {
+    # Identity of what is actually serving the port. "HTTP 200 on the health
+    # endpoint" was not enough: when a stale launcher kept the OLD process
+    # alive, the check passed and the updater announced success while the new
+    # version had never booted. Ask the plugin first (it knows its own build),
+    # then fall back to the install directory in the owner's command line.
+    try {
+        $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/dsh-auto-update/api/status" -TimeoutSec 5 -ErrorAction Stop
+        if ($status.currentVersion) { return [string]$status.currentVersion }
+    } catch { }
+    foreach ($owner in (Get-PortOwners $Port)) {
+        try {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue
+            if ($proc -and $proc.CommandLine -and ($proc.CommandLine -match 'dsh-install-([0-9][^\\/"]*)')) {
+                return [string]$Matches[1]
+            }
+        } catch { }
+    }
+    return ''
 }
 
 function Wait-WebHealthy([int]$TimeoutSeconds) {
@@ -287,8 +324,13 @@ function Restart-And-Verify {
     Stop-WebHost | Out-Null
     Start-WebHost
     if (Wait-WebHealthy 150) {
-        Write-Result 'ok' "healthy on v$Version ($(Get-Pointer))"
-        return $true
+        $running = Get-RunningVersion
+        if ($running -and ($running -ne $Version)) {
+            Write-Log "health check passed but the host still runs v$running (expected v$Version) - counting this as a failed restart"
+        } else {
+            Write-Result 'ok' "healthy on v$Version ($(Get-Pointer))"
+            return $true
+        }
     }
 
     $hint = Get-BootFailureHint
@@ -311,7 +353,12 @@ function Restart-And-Verify {
     Stop-WebHost | Out-Null
     Start-WebHost
     if (Wait-WebHealthy 150) {
-        Write-Result 'rolled-back' "v$Version did not come up healthy; restored $restore$suffix"
+        $back = Get-RunningVersion
+        if ($back) {
+            Write-Result 'rolled-back' "v$Version did not come up healthy; restored $restore (running v$back)$suffix"
+        } else {
+            Write-Result 'rolled-back' "v$Version did not come up healthy; restored $restore$suffix"
+        }
         Write-Log 'rollback completed'
         return $false
     }
