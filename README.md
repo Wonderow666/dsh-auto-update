@@ -38,7 +38,7 @@ DSH CLI 没有 `update` 子命令——`dsh plugin` 只是把参数转发给 pnp
 
 ```powershell
 # 从 GitHub 装（推荐；先 fork/clone 到本地也行，用 link: 指向本地目录）
-dsh plugin --profile web add github:<你的用户名>/dsh-auto-update
+dsh plugin --profile web add github:Wonderow666/dsh-auto-update
 
 # 或从本地目录装
 dsh plugin --profile web add link:C:\path\to\dsh-auto-update
