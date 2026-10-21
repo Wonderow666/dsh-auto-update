@@ -4,7 +4,9 @@
 
 > **English TL;DR** — a DSH plugin that checks the npm dist-tag for `@deepseek-ai/dsh`, installs the new version **side by side** (never in place), smoke-tests the composed config, repoints a launcher pointer, restarts the web host from a process outside the host's job object, and rolls back automatically if the new version does not come up healthy. It also moves the side-by-side install base to another drive (copy → verify → repoint → restart), rolling back both the pointer and the base if that fails. Windows only (PowerShell 5.1 + cmd). MIT.
 
-<img src="docs/settings-card.png" width="520" alt="设置页里的 DSH 版本更新卡片：当前 0.2.0-rc.2、可用 0.2.1-rc.2、上次结果 rolled-back">
+[<img src="docs/settings-card.png" width="520" alt="设置页里的 DSH 版本更新卡片：当前 0.2.0-rc.2、可用 0.2.1-rc.2、上次结果 rolled-back">](docs/settings-card.png)
+
+<sub>图看不了？点开它，或直接访问 [docs/settings-card.png](https://github.com/Wonderow666/dsh-auto-update/blob/main/docs/settings-card.png)。GitHub 的内嵌图走 `raw.githubusercontent.com`/`objects.githubusercontent.com`，若本机 hosts 把 `githubusercontent.com` 指到 127.0.0.1（例如交给 Steam++/Watt Toolkit 加速），而加速器只转发了 `github.com`，内嵌图就会加载失败——文件本身没问题。</sub>
 
 > **维护者当前状态（2026-10-22）**：这台机器上的 web 实例**故意停在 `0.2.0-rc.2`**。`0.2.1-rc.2` 本体能启动，但带 `dsh-vision-router` 的 profile 起不来（`connection` 等 `webRuntime` 超时，见下文「实战记录」），已两次真实切换验证并自动回滚。等 vision-router 出兼容版本后再升；`autoApply` 保持关闭，升级器会继续如实报告「有新版」。
 
