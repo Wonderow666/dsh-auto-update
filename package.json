@@ -35,6 +35,15 @@
     "win32"
   ],
   "license": "MIT",
+  "author": "Wonderow666",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Wonderow666/dsh-auto-update.git"
+  },
+  "homepage": "https://github.com/Wonderow666/dsh-auto-update#readme",
+  "bugs": {
+    "url": "https://github.com/Wonderow666/dsh-auto-update/issues"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
