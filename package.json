@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-update",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Check, install and roll back DeepSeek Harness CLI updates from the Web settings page, with a health-checked restart and automatic rollback.",
   "keywords": [
     "dsh",
