@@ -26,11 +26,34 @@ param(
     [switch]$StageOnly,
     [string]$Registry = '',
     [string]$BootLog = '',
-    [string]$Stage2Reason = ''
+    [string]$Stage2Reason = '',
+    # The plugin passes everything through this JSON file instead of the command
+    # line. powershell.exe -File drops empty arguments ("Missing an argument for
+    # parameter 'X'"), and a binding failure in a detached process used to be
+    # invisible: the API reported "started" while nothing ran. A file has no
+    # quoting, empty-value, or non-ASCII argv problems.
+    [string]$ArgsFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+if ($ArgsFile) {
+    $cfg = Get-Content -Path $ArgsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($cfg.mode) { $Mode = [string]$cfg.mode }
+    if ($cfg.version) { $Version = [string]$cfg.version }
+    if ($cfg.currentRoot) { $CurrentRoot = [string]$cfg.currentRoot }
+    if ($cfg.targetRoot) { $TargetRoot = [string]$cfg.targetRoot }
+    if ($cfg.stateDir) { $StateDir = [string]$cfg.stateDir }
+    if ($cfg.launcherDir) { $LauncherDir = [string]$cfg.launcherDir }
+    if ($cfg.launchCmd) { $LaunchCmd = [string]$cfg.launchCmd }
+    if ($cfg.bootLog) { $BootLog = [string]$cfg.bootLog }
+    if ($cfg.registry) { $Registry = [string]$cfg.registry }
+    if ($cfg.stage2Reason) { $Stage2Reason = [string]$cfg.stage2Reason }
+    if ($cfg.port) { $Port = [int]$cfg.port }
+    if ($cfg.dryRun) { $DryRun = $true }
+    if ($cfg.stageOnly) { $StageOnly = $true }
+}
 
 # Empty means "let npm use its own configured registry". A mirror can be the
 # difference between minutes and hours: registry.npmjs.org served several
@@ -209,25 +232,26 @@ function Wait-WebHealthy([int]$TimeoutSeconds) {
 # helper on this machine. Win32_Process.Create reparents the child to WmiPrvSE,
 # which no job object covers, so stage 2 always survives to start the new host.
 function Start-Stage2 {
-    $quoted = {
-        param($Value)
-        if ([string]::IsNullOrEmpty($Value)) { return '""' }
-        return ('"{0}"' -f $Value)
+    # Same reason as the plugin side: powershell.exe -File silently drops empty
+    # arguments, so an unset -LaunchCmd killed stage 2 before it could start
+    # anything. Hand the parameters over as a file instead.
+    $stage2File = Join-Path $StateDir 'stage2-args.json'
+    $payload = [ordered]@{
+        mode         = 'restart'
+        stateDir     = $StateDir
+        launcherDir  = $LauncherDir
+        launchCmd    = $LaunchCmd
+        port         = $Port
+        version      = $Version
+        currentRoot  = $CurrentRoot
+        targetRoot   = $TargetRoot
+        registry     = $Registry
+        bootLog      = $BootLog
+        stage2Reason = $(if ($Stage2Reason) { $Stage2Reason } else { "mode=$Mode version=$Version" })
     }
-    $arguments = @(
-        '-NoProfile'
-        '-ExecutionPolicy', 'Bypass'
-        '-WindowStyle', 'Hidden'
-        '-File', (& $quoted $PSCommandPath)
-        '-Mode', 'restart'
-        '-StateDir', (& $quoted $StateDir)
-        '-LauncherDir', (& $quoted $LauncherDir)
-        '-LaunchCmd', (& $quoted $LaunchCmd)
-        '-Port', "$Port"
-        '-Version', (& $quoted $Version)
-        '-Stage2Reason', (& $quoted $(if ($Stage2Reason) { $Stage2Reason } else { "mode=$Mode version=$Version" }))
-    )
-    $commandLine = 'powershell.exe ' + ($arguments -join ' ')
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText($stage2File, ($payload | ConvertTo-Json -Depth 4), $utf8)
+    $commandLine = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -ArgsFile "{1}"' -f $PSCommandPath, $stage2File
     Write-Log 'handing the restart to a detached stage-2 process'
     try {
         $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine }
