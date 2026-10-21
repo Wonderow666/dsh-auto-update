@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+
+# local runtime state written by the plugin / updater
+auto-update/
+apply.lock
+update.log
+last-result.json
+previous-root.txt
+
+# build/test debris
+*.tmp
+*.temp
+.tmp/
+coverage/
+*.log
+web-run.out.log
+npm-debug.log*
+
+# editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# secrets
+*.env
+.env*

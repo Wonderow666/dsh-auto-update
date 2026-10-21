@@ -1,0 +1,22 @@
+# ============================================================================
+# dsh-auto-update - DSH bundle patch
+# ============================================================================
+# Mounts the auto-update service on the web profile:
+#   dsh plugin --profile web add link:<absolute path of this folder>
+# then add "dsh-auto-update" to dsh.profile.bundles in the profile package.json.
+#
+# Config keys:
+#   enabled        - master switch for the background timer (default true)
+#   channel        - which npm dist-tag to follow: latest | next | alpha
+#   intervalHours  - background check interval in hours (default 6)
+#   autoApply      - when true, install a found update automatically (default false)
+# ============================================================================
+
+- insert:
+    - id: dsh-auto-update
+      name: dsh-auto-update
+      config:
+        enabled: true
+        channel: latest
+        intervalHours: 6
+        autoApply: false
