@@ -4,9 +4,7 @@
 
 > **English TL;DR** — a DSH plugin that checks the npm dist-tag for `@deepseek-ai/dsh`, installs the new version **side by side** (never in place), smoke-tests the composed config, repoints a launcher pointer, restarts the web host from a process outside the host's job object, and rolls back automatically if the new version does not come up healthy. Windows only (PowerShell 5.1 + cmd). MIT.
 
-![settings card](docs/settings-card.png)
-
-<!-- 截图待补：放到 docs/settings-card.png 后取消上一行的注释；暂时删掉那行也可以 -->
+<img src="docs/settings-card.png" width="520" alt="设置页里的 DSH 版本更新卡片：当前 0.2.0-rc.2、可用 0.2.1-rc.2、上次结果 rolled-back">
 
 > **维护者当前状态（2026-10-22）**：这台机器上的 web 实例**故意停在 `0.2.0-rc.2`**。`0.2.1-rc.2` 本体能启动，但带 `dsh-vision-router` 的 profile 起不来（`connection` 等 `webRuntime` 超时，见下文「实战记录」），已两次真实切换验证并自动回滚。等 vision-router 出兼容版本后再升；`autoApply` 保持关闭，升级器会继续如实报告「有新版」。
 
