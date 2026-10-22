@@ -31,6 +31,7 @@ DSH CLI 没有 `update` 子命令——`dsh plugin` 只是把参数转发给 pnp
 | `lib/index.js` | 宿主插件：`/status` `/check` `/apply` `/rollback` `/config` `/install-base` `/migrate` 接口 + 后台定时检查 + 自动应用 |
 | `lib/client.js` | 设置页「载具更新」卡片（当前/最新版本、检查、安装、回滚、安装目录、自动更新开关） |
 | `apply-update.ps1` | 真正干活的脚本：npm 安装 → 冒烟 → 切指针 → 停旧起新 → 健康检查 → 失败回滚 |
+| `start-updater.ps1` | 交接器：用 WMI 把 `apply-update.ps1` 拉到一个**不在宿主 job 树里**的进程，然后自己退出（见「为什么重启要绕道 WMI」） |
 | `cordis.patch.yml` | 把插件本体插进 loader |
 | `examples/start-dsh-web.cmd` | **重启命令的模板**（插件不猜你怎么启动服务，见下文） |
 | `test/handler.test.mjs` | 离线测试：临时目录里造一个假安装，直接驱动 HTTP handler，不碰真服务、不重启 |
@@ -196,6 +197,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode migrate -Version 0
 所以指针一切换就立刻 relinquish 控制权：`Win32_Process.Create` 让新进程的父进程变成 `WmiPrvSE.exe`，没有任何 job 覆盖它，stage-2 一定活到把新宿主拉起来。
 
 失败恢复也不放在 `catch` 里：会抛异常的地方都在指针切换**之前**，那时旧实例还在正常服务，什么都不用做；切换之后的健康检查与回滚由 stage-2 独占。
+
+### 连「拉起」这一步本身也得绕
+
+上面说的是 stage-2，但插件**第一次**拉起 `apply-update.ps1` 用的一直是 node 的 `detached: true`。v0.2.3 之前的版本里，这条路径在这台机器上从来没有真正跑通过：`/migrate` 会返回一句 `updater failed to start and printed nothing`，或者干脆没有反应，`updater.log` 里一个字节都没有。
+
+一次 flag 矩阵把它钉死了（同一段 `powershell.exe -File <脚本>` 命令，只改 spawn 选项，看子进程有没有写出标记文件）：
+
+| spawn 选项 | 子进程是否运行 |
+| --- | --- |
+| `detached: true`（其余任意组合） | **否**，零输出 |
+| `detached: false` | 是，退出码 0，输出正常 |
+| 去掉 `windowsHide` / 去掉 `-WindowStyle Hidden` / `stdio: 'ignore'` | 仍然否 |
+
+也就是说在这台机器上 `DETACHED_PROCESS` 拉起的 `powershell.exe` 根本不会执行；而普通子进程又能跑——但它待在宿主的 job 里，宿主一死就被带走。两个要求互相排斥，所以改成两步：
+
+1. node 普通 spawn `start-updater.ps1`（能跑），它只做一件事：`Win32_Process.Create` 创建真正的 `apply-update.ps1`，Shell 里打印 `started pid=<n>`，然后退出；
+2. 插件不再假设「spawn 成功＝开工了」，而是等 `update.log` 增长、`apply.lock` 出现、或 `updater.log` 里出现 `started pid=` 三者之一（宽限 20 秒，够两次冷启动 + WMI）。
 
 ## 安全边界
 
