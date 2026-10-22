@@ -12,8 +12,11 @@ REM    * read by cmd.exe - keep it ASCII, keep CRLF line endings
 REM    * start `dsh web` and exit; the updater polls /api/pair/status itself
 REM    * write all output to a log file - the updater reads it to explain a
 REM      failed boot instead of just saying "did not start"
+REM    * switch to code page 65001 BEFORE reading install-base.txt, so that a
+REM      non-ASCII install directory survives (see chcp below)
 REM ===========================================================================
 setlocal
+chcp 65001 >nul
 
 REM ---- settings -------------------------------------------------------------
 set "DSH_HOME=C:\path\to\dsh-home"
@@ -27,12 +30,14 @@ set "LOG=%HERE%web-run.out.log"
 
 REM The pointer holds a bare version tag (e.g. 0.2.0-rc.2). Installs live in
 REM <base>\dsh-install-<tag>, which is why the tag - and never a path - is what
-REM gets written: cmd.exe reads this file in the OEM code page, so a non-ASCII
-REM path would come back as mojibake.
+REM gets written: cmd.exe reads this file in the console code page, so a full
+REM path would only survive if every launcher agreed on that code page.
 REM
 REM install-base.txt (optional, written by the plugin's "install directory"
-REM setting) holds that base as an ASCII absolute path. Absent means "next to
-REM DSH_HOME", the default.
+REM setting) holds that base, UTF-8, and it may contain non-ASCII characters.
+REM The chcp above is what makes that safe; without it cmd.exe decodes the bytes
+REM at code page 936 and every "if exist" below fails silently. Absent means
+REM "next to DSH_HOME", the default.
 set "BASE="
 if exist "%BASE_FILE%" for /f "usebackq delims=" %%b in ("%BASE_FILE%") do if not defined BASE set "BASE=%%b"
 if defined BASE if not exist "%BASE%\" set "BASE="

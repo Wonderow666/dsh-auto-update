@@ -86,8 +86,9 @@ $LockFile        = Join-Path $StateDir 'apply.lock'
 $ResultFile      = Join-Path $StateDir 'last-result.json'
 $PointerFile     = Join-Path $LauncherDir 'current-root.txt'
 $PreviousPointer = Join-Path $StateDir 'previous-root.txt'
-# The launcher reads its base from this one-line file (cmd.exe, OEM code page, so
-# ASCII only). '-' in the backup file means "there was no file: use the default".
+# The launcher reads its base from this one-line UTF-8 file. Non-ASCII bases are
+# fine because the launcher switches the console to code page 65001 before it
+# reads the file. '-' in the backup file means "there was no file: use default".
 $BaseFile         = Join-Path $LauncherDir 'install-base.txt'
 $PreviousBaseFile = Join-Path $StateDir 'previous-base.txt'
 $HealthUrl       = "http://127.0.0.1:$Port/api/pair/status"
@@ -601,9 +602,11 @@ try {
         # "Already there" first: it is the useful answer even when the current base
         # is the default non-ASCII profile path.
         if ($sourceBase -eq $InstallBase) { throw "the install already lives in $InstallBase" }
-        # cmd.exe reads install-base.txt in the OEM code page, so a non-ASCII base
-        # comes back as mojibake and silently points at nothing.
-        if ($InstallBase -notmatch '^[A-Za-z]:[\\/][\x20-\x7E]*$') { throw "install base must be an absolute ASCII path: $InstallBase" }
+        # Non-ASCII bases are supported: install-base.txt is UTF-8 and the launcher
+        # runs `chcp 65001` before reading it. Only the characters Windows forbids
+        # in a path are refused here.
+        if ($InstallBase -notmatch '^[A-Za-z]:[\\/]') { throw "install base must be an absolute path with a drive letter: $InstallBase" }
+        if ($InstallBase -match '["*?<>|]') { throw 'install base cannot contain " * ? < > |' }
         $letter = $InstallBase.Substring(0, 1)
         $freeBytes = $null
         try {

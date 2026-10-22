@@ -96,17 +96,17 @@ setx DSH_AUTO_UPDATE_BOOT_LOG "C:\tools\start-dsh-web.log"
 
 插件只负责**切换指针**，起进程这一步交给你自己的脚本。`examples/start-dsh-web.cmd` 是一份可直接改的模板，要点：
 
-1. **指针只写版本号**（如 `0.2.1-rc.2`），脚本自己拼出安装目录。原因：`current-root.txt` 由 cmd.exe 按 OEM 代码页读取，写完整路径时，**用户名含非 ASCII 字符的机器**（如 `C:\Users\张三\...`）会读成乱码，然后静默判成"安装不存在"。只存 ASCII 版本号则任何代码页都安全。
+1. **指针只写版本号**（如 `0.2.1-rc.2`），脚本自己拼出安装目录。原因：`current-root.txt` 由 cmd.exe 按当前控制台代码页读取，写完整路径时任何代码页不一致都会读成乱码，然后静默判成"安装不存在"。只存版本号则任何代码页都安全。
 2. 脚本读不到指针时，按 `dsh-install-*` 目录名倒序回退到最新的完整安装。
 3. 一定要把 stdout/stderr 落盘（模板写同目录 `web-run.out.log`，并自行轮转）——否则"90 秒没起来"这种故障无从查起。
-4. 用了自定义安装目录时，脚本还要读同目录的 `install-base.txt` 决定去哪个目录找 `dsh-install-<版本>`（见下一节）。
+4. 用了自定义安装目录时，脚本还要读同目录的 `install-base.txt` 决定去哪个目录找 `dsh-install-<版本>`（见下一节）。**读之前先执行 `chcp 65001`**：这个文件是 UTF-8，按 OEM 代码页（936）直接解码会把中文目录名读成乱码，之后每个 `if exist` 判定都会静默失败。
 
 ## 安装目录（可改）
 
 默认安装目录是 `%DSH_HOME%` 的上一级（这台机器上是 `...\w`），每个版本装在 `<安装目录>\dsh-install-<版本>` 里。设置页的「安装目录」区块可以把它换到别的盘：
 
 - **浏览…**：弹出系统的选目录窗口，选完直接把路径填进输入框（`uiWorkspace.pickDirectory()`，和新建会话时选工作目录用的是同一个选择器）。服务绑定在 `127.0.0.1` 时是 Windows 原生对话框，等于本机可视地挑目录；从手机或别处访问时对话框会出现在**运行 dsh 的那台机器**的屏幕上，这时手动输入或粘贴路径即可。
-- 输入框旁边的提示会实时预览落点：`将安装到 <安装目录>\dsh-install-<当前版本>`；**你自己填/选的路径**里出现非 ASCII 字符会立刻标红警告并禁用两个写入按钮（不用等提交后才报错）。默认目录不受这条限制——它在批处理里由 `%USERPROFILE%` 展开，所以 `C:\Users\张三\...` 这种默认位置照常可用，卡片会显示一行说明而不是警告。
+- 输入框旁边的提示会实时预览落点：`将安装到 <安装目录>\dsh-install-<当前版本>`；**你自己填/选的路径**里出现 Windows 禁止的字符（`" * ? < > |`）会立刻标红并禁用两个写入按钮（不用等提交后才报错）。**中文目录名可以**：`E:\大鲸鱼老家` 这种路径会按 UTF-8 写进 `install-base.txt`，启动器读之前先 `chcp 65001`。
 - **改到这里**：只写配置，不动正在跑的安装；之后 `/apply` 装的新版本会落在新目录。
 - **把当前安装迁过去**：整体复制（robocopy）→ 自检（版本号 + `--dump-config` 冒烟）→ 写 `install-base.txt` → 切指针 → 重启 → 健康检查 + 版本核对。任何一步失败，**指针和 `install-base.txt` 会一起回滚**——只回滚指针会让启动脚本去新目录里找一个根本不存在的版本。
 - **恢复默认位置**：删掉 `install-base.txt`。
@@ -117,12 +117,12 @@ setx DSH_AUTO_UPDATE_BOOT_LOG "C:\tools\start-dsh-web.log"
 D:\dsh-installs
 ```
 
-- 只有一行、**纯 ASCII 绝对路径**、无 BOM。启动脚本是 cmd 批处理，按 OEM 代码页读文件；`C:\Users\张三\...` 这种路径会读成乱码，然后静默指向空目录。
+- 只有一行、**UTF-8（无 BOM）的绝对路径**、无换行。启动脚本读这个文件**之前**必须切到 UTF-8 代码页（`chcp 65001`），否则 cmd 会按 936/其它 OEM 代码页解码，中文目录名变成乱码后静默指向空目录。仓库自带的 `start-web.cmd` 与 `examples/start-dsh-web.cmd` 都已经写好这一行。
 - 文件不存在 = 用默认安装目录，**不需要**这个文件。
 - 迁移后旧目录不会自动删（它就是回滚路径），确认新版稳定后自己清理。
 - 指针存的是版本号而不是路径，所以"同一版本在两个目录里都有"时按 `install-base.txt` → 默认目录的顺序找，再退到该目录下最新的完整安装。
 
-限制：自定义目录必须在 ASCII 路径下（空格可以、中文不行），磁盘剩余空间需 ≥ 安装体积的 1.2 倍（0.2.x 每个版本约 300–700 MB）。
+限制：自定义目录必须是绝对路径、不含 `" * ? < > |`、不以空格或点结尾，磁盘剩余空间需 ≥ 安装体积的 1.2 倍（0.2.x 每个版本约 300–700 MB）。中文、空格都可以。
 
 ## 接口
 
@@ -177,7 +177,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode apply -Version 0.2
 
 ## 迁移流程（`-Mode migrate`）
 
-1. 校验目标目录：ASCII 绝对路径、不是某个 `dsh-install-*` 本身、盘存在、剩余空间 ≥ 1.2× 安装体积（"已经在那个目录"这个判断放在最前面，所以它给出的原因永远准确）
+1. 校验目标目录：绝对路径、不含 `" * ? < > |`、不是某个 `dsh-install-*` 本身、盘存在、剩余空间 ≥ 1.2× 安装体积（"已经在那个目录"这个判断放在最前面，所以它给出的原因永远准确）
 2. `robocopy <当前根> <新目录>\dsh-install-<版本> /E /R:1 /W:1 /MT:8`（退出码 ≥ 8 视为失败）
 3. 自检：`package.json` 版本 == 当前版本，且 `--dump-config` 能组合出配置树
 4. 备份旧指针与旧 `install-base.txt`（`previous-root.txt` / `previous-base.txt`，`-` 表示原本没有）
@@ -199,7 +199,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode migrate -Version 0
 
 ## 安全边界
 
-- **安装目录白名单**：只安装到 `<installBase>\dsh-install-<version>`，不会把 `npm install` 引向任意目录；改安装目录同样受限——只接受 ASCII 绝对路径，且不能指向某个 `dsh-install-*` 目录本身
+- **安装目录白名单**：只安装到 `<installBase>\dsh-install-<version>`，不会把 `npm install` 引向任意目录；改安装目录同样受限——只接受绝对路径（可含中文）、不含 `" * ? < > |`，且不能指向某个 `dsh-install-*` 目录本身
 - **版本串校验**：`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$`，且必须比当前版本新（想降级请走 `/rollback`）
 - **写操作要护栏头**：见上，非凭证、只为挡 CSRF
 - **没配重启命令就拒绝升级**：`apply` / `rollback` 会在动指针前失败，不会留下起不来的 profile
@@ -217,7 +217,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $ps -Mode migrate -Version 0
 | `update.log` | 每次升级的完整日志（含 npm 输出） |
 | `apply.lock` | 单实例锁 |
 | `launcher/current-root.txt` | 启动指针（只存版本号；目录可由 `DSH_AUTO_UPDATE_LAUNCHER_DIR` 改变） |
-| `launcher/install-base.txt` | 安装目录（唯一一行 ASCII 路径；文件不存在 = 默认目录） |
+| `launcher/install-base.txt` | 安装目录（唯一一行 UTF-8 绝对路径，可含中文；文件不存在 = 默认目录） |
 | `previous-base.txt` | 迁移前的 `install-base.txt` 内容，供回滚恢复（`-` 表示原本没有这个文件） |
 
 ## 排障
@@ -249,7 +249,7 @@ $env:DSH_AUTO_UPDATE_OFFLINE=1; node test/handler.test.mjs    # 跳过网络
 
 - 只更新 `@deepseek-ai/dsh` 主包，不动 profile 里的插件（插件各自更新）
 - Windows 专用：重启链依赖 PowerShell 5.1 + cmd.exe 的实例语义
-- 自定义安装目录必须是纯 ASCII 路径（cmd.exe 代码页限制）：空格可以，中文/日文目录名会被拒绝
+- 自定义安装目录必须是绝对路径且不含 Windows 禁止的字符；中文目录名可以用，但要求启动脚本在读取 `install-base.txt` 前执行 `chcp 65001`（自带的两份脚本都已默认加上），自己另写的启动器漏了这一行就会静默找不到安装
 - 迁移是整个目录复制，不保留硬链接；同一版本在两个目录各占一份空间，直到你手动删掉旧目录
 - `next` / `alpha` 是预发布通道，别在生产开
 - 升级期间网页会短暂断连（服务确实被重启了）
